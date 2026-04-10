@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createSessionClient, createAdminClient } from '@/lib/supabase/server';
-import { signDP3License } from '@/lib/license/sign';
+import { createLicenseFilePayload, signDP3License } from '@/lib/license/sign';
 import { writeAuditLog } from '@/lib/audit/log';
 
 type PlanType = 'standard' | 'pro' | 'enterprise';
@@ -272,8 +272,16 @@ export async function POST(request: Request) {
   // STEP 5 — Generate DP3 license
   // ================================================================
   let licenseKey: string;
+  let licenseFile;
   try {
     licenseKey = signDP3License(clinic_name.trim(), expires_at, plan_type ?? 'standard', deviceIdNorm, clinicId);
+    licenseFile = createLicenseFilePayload(
+      clinic_name.trim(),
+      expires_at,
+      plan_type ?? 'standard',
+      deviceIdNorm,
+      clinicId,
+    );
   } catch (err) {
     console.error('[onboarding/run] step=license sign', err);
     if (isNewDevice) await rollbackDevice(admin, deviceIdNorm);
@@ -330,6 +338,7 @@ export async function POST(request: Request) {
         owner_email: owner_email.trim(),
         device_id:   deviceIdNorm,
         license_key: licenseKey,
+        license_file: licenseFile,
         expires_at,
       },
     },

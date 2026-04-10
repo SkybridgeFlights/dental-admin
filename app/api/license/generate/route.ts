@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createSessionClient, createAdminClient } from '@/lib/supabase/server';
-import { signDP3License } from '@/lib/license/sign';
+import { createLicenseFilePayload, signDP3License } from '@/lib/license/sign';
 import { writeAuditLog } from '@/lib/audit/log';
 
 // POST /api/license/generate
@@ -105,8 +105,10 @@ export async function POST(request: Request) {
 
   // 6. Sign the license — server-side only, secret never leaves this function
   let licenseKey: string;
+  let licenseFile;
   try {
     licenseKey = signDP3License(clinicName, expiryDate, licenseType, deviceId, clinicId);
+    licenseFile = createLicenseFilePayload(clinicName, expiryDate, licenseType, deviceId, clinicId);
   } catch (err) {
     console.error('[license/generate] signing failed:', err);
     return NextResponse.json({ error: 'SIGNING_FAILED' }, { status: 500 });
@@ -169,5 +171,5 @@ export async function POST(request: Request) {
     metadata:   { clinic_name: clinicName, device_id: deviceId, license_type: licenseType, expiry_date: expiryDate },
   });
 
-  return NextResponse.json({ licenseKey }, { status: 201 });
+  return NextResponse.json({ licenseKey, licenseFile }, { status: 201 });
 }
