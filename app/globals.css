@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-slate-900 text-slate-100 antialiased;
+}
+
+/* Smooth focus ring for keyboard nav */
+*:focus-visible {
+  @apply outline-2 outline-offset-2 outline-blue-500;
+}

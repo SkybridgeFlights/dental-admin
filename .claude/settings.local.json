@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(sed -n '1038,1100p' \"C:/Users/Wajd Shaaban/OneDrive/Desktop/dental-clinic/dental-clinic-desktop/src/styles/global.css\")",
+      "Bash(sed -n '1390,1540p' \"C:/Users/Wajd Shaaban/OneDrive/Desktop/dental-clinic/dental-clinic-desktop/src/styles/global.css\")",
+      "Bash(node -e ':*)",
+      "Bash(cmd.exe //c \"start \\\\\"\\\\\" \\\\\"C:\\\\\\\\Users\\\\\\\\Wajd Shaaban\\\\\\\\OneDrive\\\\\\\\Desktop\\\\\\\\dental-clinic\\\\\\\\dental-clinic-desktop\\\\\\\\backups\\\\\"\")",
+      "Bash(echo \"Path to open: C:\\\\\\\\Users\\\\\\\\Wajd Shaaban\\\\\\\\OneDrive\\\\\\\\Desktop\\\\\\\\dental-clinic\\\\\\\\dental-clinic-desktop\\\\\\\\backups\")",
+      "Bash(explorer.exe \"C:/Users/Wajd Shaaban/OneDrive/Desktop/dental-clinic/dental-clinic-desktop/backups\")",
+      "Bash(node:*)"
+    ]
+  }
+}
