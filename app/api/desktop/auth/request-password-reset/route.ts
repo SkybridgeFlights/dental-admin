@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createSessionClient } from '@/lib/supabase/server';
-import { isDesktopInternalRequest } from '@/lib/desktop/internal';
+import { inspectDesktopInternalRequest } from '@/lib/desktop/internal';
 
 const ROUTE_INFO = {
   route: '/api/desktop/auth/request-password-reset',
@@ -34,8 +34,17 @@ export async function POST(request: Request) {
     url: request.url,
   });
 
-  if (!isDesktopInternalRequest(request)) {
-    return NextResponse.json({ success: false, code: 'FORBIDDEN' }, { status: 403 });
+  const auth = inspectDesktopInternalRequest(request);
+  if (!auth.ok) {
+    console.error('[desktop-auth][request-password-reset] forbidden', auth);
+    return NextResponse.json(
+      {
+        success: false,
+        code: 'FORBIDDEN',
+        reason: auth.reason,
+      },
+      { status: 403 },
+    );
   }
 
   let body: { email?: string };
