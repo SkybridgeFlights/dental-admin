@@ -5,6 +5,7 @@ import { createAdminClient } from '@/lib/supabase/server';
 import { ClinicStatusBadge, PlanBadge } from '@/components/admin/StatusBadge';
 import { ClinicStatusToggle } from '@/components/admin/ClinicStatusToggle';
 import { DeviceManager } from '@/components/admin/DeviceManager';
+import { ClinicLicensePanel } from '@/components/admin/ClinicLicensePanel';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
@@ -116,6 +117,13 @@ export default async function ClinicDetailPage({ params }: { params: Promise<{ c
       </div>
 
       {/* Devices */}
+      <ClinicLicensePanel
+        clinicId={clinic.id}
+        clinicName={clinic.clinic_name}
+        planType={clinic.plan_type}
+        expiresAt={clinic.expires_at}
+      />
+
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-slate-100">Registered Devices</h2>

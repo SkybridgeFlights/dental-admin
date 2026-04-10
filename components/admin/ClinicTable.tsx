@@ -19,9 +19,16 @@ export type ClinicRow = {
 
 type LicenseData = {
   license_key: string;
+  license_file: Record<string, unknown>;
   expires_at: string;
   device_id: string;
   generated_at: string;
+  license_type?: string;
+  license_status?: string;
+  owner?: {
+    email?: string;
+    full_name?: string;
+  } | null;
 };
 
 type Toast = { message: string; type: 'success' | 'error' };
@@ -36,6 +43,20 @@ function formatDate(iso: string) {
 
 function isExpired(iso: string) {
   return new Date(iso) < new Date();
+}
+
+function downloadLicenseFile(clinicName: string, deviceId: string, licenseFile: Record<string, unknown>) {
+  const fileName = `${clinicName || 'clinic'}-${deviceId || 'device'}.dpl`
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  const blob = new Blob([JSON.stringify(licenseFile, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName || 'dentalpro-license.dpl';
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function ToastBar({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
@@ -125,6 +146,17 @@ function LicenseModal({
               <span className="text-xs font-medium uppercase tracking-wider text-slate-500">Generated</span>
               <span className="text-xs text-slate-400">{formatDate(license.generated_at)}</span>
             </div>
+            <div className="col-span-2 flex flex-col gap-0.5">
+              <span className="text-xs font-medium uppercase tracking-wider text-slate-500">License Status</span>
+              <span className="text-sm capitalize text-slate-200">{license.license_status || 'active'}</span>
+            </div>
+            {license.owner?.email ? (
+              <div className="col-span-2 flex flex-col gap-0.5">
+                <span className="text-xs font-medium uppercase tracking-wider text-slate-500">Owner Login</span>
+                <span className="text-sm text-slate-200">{license.owner.full_name || license.owner.email}</span>
+                <span className="text-xs text-slate-400">{license.owner.email}</span>
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-2">
@@ -140,6 +172,14 @@ function LicenseModal({
                 {copied ? 'Copied' : 'Copy'}
               </button>
             </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => downloadLicenseFile(clinicName, license.device_id, license.license_file)}
+              className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700"
+            >
+              Download License File
+            </button>
           </div>
         </div>
 
@@ -192,6 +232,7 @@ export function ClinicTable({ clinics }: { clinics: ClinicRow[] }) {
         const messages: Record<string, string> = {
           NO_LICENSE_FOUND: 'No license has been generated for this clinic yet.',
           DATABASE_ERROR: 'Database error. Please try again.',
+          CLINIC_NOT_FOUND: 'Clinic not found.',
           UNAUTHORIZED: 'Session expired. Please refresh.',
           FORBIDDEN: 'Access denied. Please refresh and try again.',
         };
@@ -256,9 +297,13 @@ export function ClinicTable({ clinics }: { clinics: ClinicRow[] }) {
       setLicenseError(null);
       setLicenseData({
         license_key: generateJson.licenseKey,
+        license_file: generateJson.licenseFile,
         expires_at: clinic.expires_at,
         device_id: deviceId,
         generated_at: new Date().toISOString(),
+        license_type: clinic.plan_type,
+        license_status: isExpired(clinic.expires_at) ? 'expired' : 'active',
+        owner: latestJson.owner || null,
       });
       showToast(`New license generated for ${clinic.clinic_name}`, 'success');
     } catch {

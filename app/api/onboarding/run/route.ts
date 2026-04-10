@@ -47,6 +47,98 @@ async function rollbackAuthUser(admin: AdminClient, userId: string) {
   }
 }
 
+async function findAuthUserByEmail(admin: AdminClient, email: string) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  let page = 1;
+
+  while (page <= 20) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) {
+      throw error;
+    }
+
+    const users = data?.users ?? [];
+    const match = users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail);
+    if (match) {
+      return match;
+    }
+
+    if (users.length < 200) {
+      return null;
+    }
+
+    page += 1;
+  }
+
+  return null;
+}
+
+async function ensureOwnerAuthUser(
+  admin: AdminClient,
+  clinicId: string,
+  ownerEmail: string,
+  tempPassword: string,
+  ownerName: string,
+) {
+  const normalizedEmail = ownerEmail.trim().toLowerCase();
+  const createResult = await admin.auth.admin.createUser({
+    email: normalizedEmail,
+    password: tempPassword,
+    email_confirm: true,
+  });
+
+  if (!createResult.error && createResult.data.user) {
+    return {
+      user: createResult.data.user,
+      mode: 'created',
+    };
+  }
+
+  const errorMessage = String(createResult.error?.message || '').toLowerCase();
+  const alreadyExists = errorMessage.includes('already') || errorMessage.includes('registered');
+  if (!alreadyExists) {
+    throw createResult.error || new Error('Failed to create owner account');
+  }
+
+  const existingUser = await findAuthUserByEmail(admin, normalizedEmail);
+  if (!existingUser) {
+    throw createResult.error || new Error('Failed to locate existing owner account');
+  }
+
+  const { data: existingProfile, error: profileLookupError } = await admin
+    .from('profiles')
+    .select('id, clinic_id, role, status')
+    .eq('id', existingUser.id)
+    .maybeSingle();
+
+  if (profileLookupError) {
+    throw profileLookupError;
+  }
+
+  if (existingProfile && existingProfile.clinic_id !== clinicId) {
+    const conflict = new Error('OWNER_EMAIL_ALREADY_IN_USE');
+    conflict.name = 'OWNER_EMAIL_ALREADY_IN_USE';
+    throw conflict;
+  }
+
+  const { error: updateError } = await admin.auth.admin.updateUserById(existingUser.id, {
+    password: tempPassword,
+    email_confirm: true,
+    user_metadata: {
+      full_name: ownerName,
+    },
+  });
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  return {
+    user: existingUser,
+    mode: existingProfile ? 'reused-existing-profile' : 'reused-auth-user',
+  };
+}
+
 async function rollbackProfile(admin: AdminClient, userId: string) {
   try {
     await admin.from('profiles').delete().eq('id', userId);
@@ -148,19 +240,24 @@ export async function POST(request: Request) {
   // ================================================================
   // STEP 2 — Create owner auth user
   // ================================================================
-  const { data: authData, error: authCreateError } =
-    await admin.auth.admin.createUser({
-      email:         owner_email.trim(),
-      password:      temp_password,
-      email_confirm: true, // allows immediate login without email verification
-    });
-
-  if (authCreateError || !authData.user) {
+  let ownerAuth;
+  try {
+    ownerAuth = await ensureOwnerAuthUser(
+      admin,
+      clinicId,
+      owner_email.trim(),
+      temp_password,
+      owner_name.trim(),
+    );
+  } catch (authCreateError: any) {
     console.error('[onboarding/run] step=auth_user', authCreateError);
     await rollbackClinic(admin, clinicId);
+    if (String(authCreateError?.message || authCreateError?.name || '') === 'OWNER_EMAIL_ALREADY_IN_USE') {
+      return fail('auth_user', 'This owner email already belongs to another clinic');
+    }
     return fail('auth_user', authCreateError?.message ?? 'Failed to create owner account');
   }
-  const ownerId = authData.user.id;
+  const ownerId = ownerAuth.user.id;
 
   // ================================================================
   // STEP 3 — Create profile row linked to clinic
@@ -281,6 +378,12 @@ export async function POST(request: Request) {
       plan_type ?? 'standard',
       deviceIdNorm,
       clinicId,
+      {
+        ownerEmail: owner_email.trim(),
+        ownerName: owner_name.trim(),
+        ownerSupabaseUserId: ownerId,
+        preferredLanguage: 'en',
+      },
     );
   } catch (err) {
     console.error('[onboarding/run] step=license sign', err);
@@ -340,6 +443,7 @@ export async function POST(request: Request) {
         license_key: licenseKey,
         license_file: licenseFile,
         expires_at,
+        owner_auth_mode: ownerAuth.mode,
       },
     },
     { status: 201 },

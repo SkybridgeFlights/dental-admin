@@ -72,6 +72,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'CLINIC_NOT_ACTIVE' }, { status: 400 });
   }
 
+  const { data: ownerProfile } = await admin
+    .from('profiles')
+    .select('id, email, full_name, preferred_language, role, status')
+    .eq('clinic_id', clinicId)
+    .eq('role', 'owner')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
   // 4. Check if this device is already registered to a different clinic
   const { data: existingDevice } = await admin
     .from('devices')
@@ -108,7 +117,21 @@ export async function POST(request: Request) {
   let licenseFile;
   try {
     licenseKey = signDP3License(clinicName, expiryDate, licenseType, deviceId, clinicId);
-    licenseFile = createLicenseFilePayload(clinicName, expiryDate, licenseType, deviceId, clinicId);
+    licenseFile = createLicenseFilePayload(
+      clinicName,
+      expiryDate,
+      licenseType,
+      deviceId,
+      clinicId,
+      ownerProfile
+        ? {
+            ownerEmail: ownerProfile.email,
+            ownerName: ownerProfile.full_name,
+            ownerSupabaseUserId: ownerProfile.id,
+            preferredLanguage: ownerProfile.preferred_language,
+          }
+        : null,
+    );
   } catch (err) {
     console.error('[license/generate] signing failed:', err);
     return NextResponse.json({ error: 'SIGNING_FAILED' }, { status: 500 });
