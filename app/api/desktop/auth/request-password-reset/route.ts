@@ -2,12 +2,38 @@ import { NextResponse } from 'next/server';
 import { createSessionClient } from '@/lib/supabase/server';
 import { isDesktopInternalRequest } from '@/lib/desktop/internal';
 
+const ROUTE_INFO = {
+  route: '/api/desktop/auth/request-password-reset',
+  methods: ['GET', 'POST', 'OPTIONS'],
+};
+
 function resolveCallbackUrl(request: Request) {
   const url = new URL(request.url);
   return `${url.origin}/api/auth/callback?next=/reset-password`;
 }
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    ...ROUTE_INFO,
+  });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      Allow: 'GET, POST, OPTIONS',
+    },
+  });
+}
+
 export async function POST(request: Request) {
+  console.info('[desktop-auth][request-password-reset] request received', {
+    method: request.method,
+    url: request.url,
+  });
+
   if (!isDesktopInternalRequest(request)) {
     return NextResponse.json({ success: false, code: 'FORBIDDEN' }, { status: 403 });
   }
@@ -29,6 +55,11 @@ export async function POST(request: Request) {
   const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
 
   if (error) {
+    console.error('[desktop-auth][request-password-reset] supabase error', {
+      email,
+      redirectTo,
+      message: error.message,
+    });
     return NextResponse.json(
       {
         success: false,
@@ -40,6 +71,11 @@ export async function POST(request: Request) {
     );
   }
 
+  console.info('[desktop-auth][request-password-reset] accepted', {
+    email,
+    redirectTo,
+  });
+
   return NextResponse.json({
     success: true,
     code: 'RESET_EMAIL_REQUESTED',
@@ -48,4 +84,3 @@ export async function POST(request: Request) {
       'Supabase accepted the reset request, but email delivery still depends on the project email configuration. Without working SMTP/email settings, the message may not arrive.',
   });
 }
-
