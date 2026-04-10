@@ -264,7 +264,7 @@ export async function POST(request: Request) {
   // ================================================================
   const { error: profileError } = await admin.from('profiles').insert({
     id:        ownerId,
-    email:     owner_email.trim(),
+    email:     owner_email.trim().toLowerCase(),
     full_name: owner_name.trim(),
     clinic_id: clinicId,
     role:      'owner',
@@ -379,7 +379,7 @@ export async function POST(request: Request) {
       deviceIdNorm,
       clinicId,
       {
-        ownerEmail: owner_email.trim(),
+        ownerEmail: owner_email.trim().toLowerCase(),
         ownerName: owner_name.trim(),
         ownerSupabaseUserId: ownerId,
         preferredLanguage: 'en',
