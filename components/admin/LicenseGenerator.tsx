@@ -70,8 +70,8 @@ export function LicenseGenerator({ clinics }: { clinics: Clinic[] }) {
       return;
     }
 
-    if (!/^DPDEV-[0-9a-fA-F]{8}$/i.test(deviceId.trim())) {
-      setError('Device ID must match DPDEV-XXXXXXXX format (8 hex characters).');
+    if (!/^DPDEV-[0-9a-fA-F]{32}$/i.test(deviceId.trim())) {
+      setError('Device ID must match the 32-character ID shown by the desktop app.');
       return;
     }
 

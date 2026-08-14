@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createSessionClient, createAdminClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
+import { requireApiAdmin } from '@/lib/auth/require-api-admin';
 import { createLicenseFilePayload, parseDP3LicenseKey } from '@/lib/license/sign';
 
 function normalizeStatus(input: {
@@ -24,17 +25,8 @@ function normalizeStatus(input: {
 }
 
 export async function GET(request: Request) {
-  const sessionClient = await createSessionClient();
-  const { data: { user }, error: authError } = await sessionClient.auth.getUser();
-  if (authError || !user) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 403 });
-  }
-
-  const whitelist = (process.env.ADMIN_EMAIL_WHITELIST ?? '')
-    .split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  if (whitelist.length > 0 && !whitelist.includes(user.email?.toLowerCase() ?? '')) {
-    return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-  }
+  const authorization = await requireApiAdmin();
+  if (!authorization.ok) return authorization.response;
 
   const { searchParams } = new URL(request.url);
   const clinicId = searchParams.get('clinicId')?.trim();
@@ -93,8 +85,8 @@ export async function GET(request: Request) {
 
   const licenseFile = createLicenseFilePayload(
     parsedLicense.clinicName,
-    parsedLicense.expiryDate,
-    parsedLicense.type,
+    parsedLicense.expiresAt.slice(0, 10),
+    parsedLicense.edition,
     parsedLicense.deviceId,
     parsedLicense.clinicId || clinic.id,
     ownerProfile

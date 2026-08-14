@@ -1,6 +1,7 @@
-import 'server-only';
+import { createPrivateKey, randomBytes, randomUUID, sign } from 'crypto';
 
-import { createHmac, randomUUID } from 'crypto';
+export const LICENSE_SCHEMA = 'dentalpro-license/v4' as const;
+export const LICENSE_ALGORITHM = 'Ed25519' as const;
 
 export type OwnerBootstrapSource = {
   ownerEmail: string;
@@ -9,187 +10,70 @@ export type OwnerBootstrapSource = {
   preferredLanguage?: string | null;
 };
 
-export type LicenseBootstrapGrant = {
-  version: 'DP3-BOOTSTRAP-1';
-  ownerEmail: string;
-  ownerName: string;
-  ownerSupabaseUserId: string;
-  role: 'owner';
-  preferredLanguage: string;
+export type LicenseClaims = {
+  schema: typeof LICENSE_SCHEMA;
+  licenseId: string;
+  clinicId: string;
+  clinicName: string;
+  deviceId: string;
+  deviceCredential: string;
+  edition: 'standard' | 'pro' | 'enterprise';
   issuedAt: string;
-  grantNonce: string;
-  signature: string;
-};
-
-export type LicenseFilePayload = {
-  version: 'DP3-LICENSE-FILE-1';
-  clinicId: string;
-  clinicName: string;
-  deviceId: string;
   expiresAt: string;
-  expiryDate: string;
-  plan: string;
-  type: string;
-  signature: string;
-  bootstrapGrant: LicenseBootstrapGrant | null;
+  bootstrap: null | {
+    ownerEmail: string;
+    ownerName: string;
+    ownerSupabaseUserId: string;
+    role: 'owner';
+    preferredLanguage: string;
+    grantNonce: string;
+  };
 };
 
-type LicensePayload = {
-  clinicId?: string;
-  clinicName: string;
-  expiresAt: string;
-  expiryDate: string;
-  plan: string;
-  type: string;
-  deviceId: string;
+export type LicenseEnvelope = {
+  version: 'DP4-LICENSE-1';
+  algorithm: typeof LICENSE_ALGORITHM;
+  keyId: string;
+  claims: LicenseClaims;
   signature: string;
 };
 
-function requireLicenseSecret() {
-  const secret = String(process.env.LICENSE_HMAC_SECRET || '').trim();
-  if (!secret) {
-    throw new Error('LICENSE_HMAC_SECRET is not configured');
-  }
-  return secret;
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`).join(',')}}`;
 }
 
-function signWithSecret(data: string) {
-  return createHmac('sha256', requireLicenseSecret())
-    .update(data)
-    .digest('hex')
-    .slice(0, 20)
-    .toUpperCase();
+function base64Url(value: Buffer | string) {
+  return Buffer.from(value).toString('base64url');
 }
 
-function buildLicenseSigningData(
-  clinicName: string,
-  expiryDate: string,
-  type: string,
-  deviceId: string,
-): string {
-  return [
-    clinicName.trim(),
-    expiryDate.trim(),
-    type.trim().toLowerCase(),
-    deviceId.trim().toUpperCase(),
-  ].join('|');
+function decodeBase64Url(value: string) {
+  return Buffer.from(value, 'base64url').toString('utf8');
 }
 
-function buildBootstrapSigningData(input: {
-  clinicId: string;
-  clinicName: string;
-  deviceId: string;
-  ownerEmail: string;
-  ownerSupabaseUserId: string;
-  role: string;
-  issuedAt: string;
-  grantNonce: string;
-}) {
-  return [
-    'bootstrap',
-    String(input.clinicId || '').trim(),
-    String(input.clinicName || '').trim(),
-    String(input.deviceId || '').trim().toUpperCase(),
-    String(input.ownerEmail || '').trim().toLowerCase(),
-    String(input.ownerSupabaseUserId || '').trim(),
-    String(input.role || '').trim().toLowerCase(),
-    String(input.issuedAt || '').trim(),
-    String(input.grantNonce || '').trim(),
-  ].join('|');
+function requirePrivateKey() {
+  const raw = String(process.env.LICENSE_ED25519_PRIVATE_KEY || '').trim();
+  if (!raw) throw new Error('LICENSE_ED25519_PRIVATE_KEY is not configured');
+  const material = raw.includes('BEGIN PRIVATE KEY')
+    ? raw.replace(/\\n/g, '\n')
+    : Buffer.from(raw, 'base64').toString('utf8');
+  const key = createPrivateKey(material);
+  if (key.asymmetricKeyType !== 'ed25519') throw new Error('License signing key must be Ed25519');
+  return key;
 }
 
-function base64UrlEncode(str: string): string {
-  return Buffer.from(str, 'utf8')
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
+function normalizeExpiry(expiryDate: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) throw new Error('Invalid expiry date');
+  return new Date(`${expiryDate}T23:59:59.999Z`).toISOString();
 }
 
-function decodeBase64Url(value: string): string {
-  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
-  return Buffer.from(padded, 'base64').toString('utf8');
-}
-
-function buildLicensePayload(
-  clinicName: string,
-  expiryDate: string,
-  type: string,
-  deviceId: string,
-  clinicId?: string,
-): LicensePayload {
-  const normalizedClinicName = clinicName.trim();
-  const normalizedExpiryDate = expiryDate.trim();
-  const normalizedType = type.trim().toLowerCase();
-  const normalizedDeviceId = deviceId.trim().toUpperCase();
-
-  const payload: LicensePayload = {
-    clinicName: normalizedClinicName,
-    expiresAt: normalizedExpiryDate,
-    expiryDate: normalizedExpiryDate,
-    plan: normalizedType,
-    type: normalizedType,
-    deviceId: normalizedDeviceId,
-    signature: signWithSecret(
-      buildLicenseSigningData(
-        normalizedClinicName,
-        normalizedExpiryDate,
-        normalizedType,
-        normalizedDeviceId,
-      ),
-    ),
-  };
-
-  if (clinicId) {
-    payload.clinicId = String(clinicId).trim();
-  }
-
-  return payload;
-}
-
-export function createBootstrapGrant(params: {
-  clinicId: string;
-  clinicName: string;
-  deviceId: string;
-  ownerEmail: string;
-  ownerName: string;
-  ownerSupabaseUserId: string;
-  preferredLanguage?: string | null;
-  issuedAt?: string;
-  grantNonce?: string;
-}): LicenseBootstrapGrant {
-  const issuedAt = String(params.issuedAt || '').trim() || new Date().toISOString();
-  const grantNonce = String(params.grantNonce || '').trim() || randomUUID();
-
-  const grant = {
-    version: 'DP3-BOOTSTRAP-1' as const,
-    ownerEmail: String(params.ownerEmail || '').trim().toLowerCase(),
-    ownerName: String(params.ownerName || '').trim(),
-    ownerSupabaseUserId: String(params.ownerSupabaseUserId || '').trim(),
-    role: 'owner' as const,
-    preferredLanguage: ['ar', 'de', 'en'].includes(String(params.preferredLanguage || '').trim())
-      ? String(params.preferredLanguage || '').trim()
-      : 'en',
-    issuedAt,
-    grantNonce,
-    signature: '',
-  };
-
-  grant.signature = signWithSecret(
-    buildBootstrapSigningData({
-      clinicId: String(params.clinicId || '').trim(),
-      clinicName: String(params.clinicName || '').trim(),
-      deviceId: String(params.deviceId || '').trim(),
-      ownerEmail: grant.ownerEmail,
-      ownerSupabaseUserId: grant.ownerSupabaseUserId,
-      role: grant.role,
-      issuedAt: grant.issuedAt,
-      grantNonce: grant.grantNonce,
-    }),
-  );
-
-  return grant;
+function createEnvelope(claims: LicenseClaims): LicenseEnvelope {
+  const keyId = String(process.env.LICENSE_SIGNING_KEY_ID || '').trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(keyId)) throw new Error('LICENSE_SIGNING_KEY_ID is invalid');
+  const signature = sign(null, Buffer.from(canonicalize(claims), 'utf8'), requirePrivateKey()).toString('base64url');
+  return { version: 'DP4-LICENSE-1', algorithm: LICENSE_ALGORITHM, keyId, claims, signature };
 }
 
 export function createLicenseFilePayload(
@@ -197,34 +81,32 @@ export function createLicenseFilePayload(
   expiryDate: string,
   type: string,
   deviceId: string,
-  clinicId?: string,
-  ownerBootstrap?: OwnerBootstrapSource | null,
-): LicenseFilePayload {
-  const payload = buildLicensePayload(clinicName, expiryDate, type, deviceId, clinicId);
-  const bootstrapGrant = clinicId && ownerBootstrap?.ownerEmail && ownerBootstrap?.ownerSupabaseUserId
-    ? createBootstrapGrant({
-        clinicId,
-        clinicName: payload.clinicName,
-        deviceId: payload.deviceId,
-        ownerEmail: ownerBootstrap.ownerEmail,
-        ownerName: ownerBootstrap.ownerName,
-        ownerSupabaseUserId: ownerBootstrap.ownerSupabaseUserId,
-        preferredLanguage: ownerBootstrap.preferredLanguage,
-      })
-    : null;
-
-  return {
-    version: 'DP3-LICENSE-FILE-1',
-    clinicId: payload.clinicId || '',
-    clinicName: payload.clinicName,
-    deviceId: payload.deviceId,
-    expiresAt: payload.expiresAt,
-    expiryDate: payload.expiryDate,
-    plan: payload.plan,
-    type: payload.type,
-    signature: payload.signature,
-    bootstrapGrant,
+  clinicId = '',
+  owner?: OwnerBootstrapSource | null,
+): LicenseEnvelope {
+  const edition = String(type).toLowerCase();
+  if (!['standard', 'pro', 'enterprise'].includes(edition)) throw new Error('Invalid license edition');
+  const claims: LicenseClaims = {
+    schema: LICENSE_SCHEMA,
+    licenseId: randomUUID(),
+    clinicId: String(clinicId).trim(),
+    clinicName: String(clinicName).trim(),
+    deviceId: String(deviceId).trim().toUpperCase(),
+    deviceCredential: randomBytes(32).toString('base64url'),
+    edition: edition as LicenseClaims['edition'],
+    issuedAt: new Date().toISOString(),
+    expiresAt: normalizeExpiry(expiryDate),
+    bootstrap: owner ? {
+      ownerEmail: String(owner.ownerEmail).trim().toLowerCase(),
+      ownerName: String(owner.ownerName).trim(),
+      ownerSupabaseUserId: String(owner.ownerSupabaseUserId).trim(),
+      role: 'owner',
+      preferredLanguage: ['ar', 'de', 'en'].includes(String(owner.preferredLanguage)) ? String(owner.preferredLanguage) : 'en',
+      grantNonce: randomUUID(),
+    } : null,
   };
+  if (!claims.clinicId || !claims.clinicName || !claims.deviceId) throw new Error('Incomplete license claims');
+  return createEnvelope(claims);
 }
 
 export function signDP3License(
@@ -234,40 +116,37 @@ export function signDP3License(
   deviceId: string,
   clinicId?: string,
 ): string {
-  const payload = buildLicensePayload(clinicName, expiryDate, type, deviceId, clinicId);
-  return `DP3-${base64UrlEncode(JSON.stringify(payload))}`;
+  const envelope = createLicenseFilePayload(clinicName, expiryDate, type, deviceId, clinicId);
+  return `DP4-${base64Url(JSON.stringify(envelope))}`;
 }
 
-export function parseDP3LicenseKey(licenseKey: string): LicensePayload | null {
-  const match = String(licenseKey || '').trim().match(/^DP3-([A-Za-z0-9\-_]+)$/);
-  if (!match) {
-    return null;
-  }
+export function encodeLicenseEnvelope(envelope: LicenseEnvelope) {
+  return `DP4-${base64Url(JSON.stringify(envelope))}`;
+}
 
+export function createSignedLicenseArtifacts(
+  clinicName: string,
+  expiryDate: string,
+  type: string,
+  deviceId: string,
+  clinicId: string,
+  owner?: OwnerBootstrapSource | null,
+) {
+  const licenseFile = createLicenseFilePayload(clinicName, expiryDate, type, deviceId, clinicId, owner);
+  return { licenseFile, licenseKey: encodeLicenseEnvelope(licenseFile) };
+}
+
+export function parseDP3LicenseKey(value: string): LicenseClaims | null {
+  const match = String(value || '').trim().match(/^DP4-([A-Za-z0-9_-]+)$/);
+  if (!match) return null;
   try {
-    const payload = JSON.parse(decodeBase64Url(match[1]));
-    if (
-      !payload
-      || !payload.clinicName
-      || !(payload.expiryDate || payload.expiresAt)
-      || !(payload.type || payload.plan)
-      || !payload.deviceId
-      || !payload.signature
-    ) {
-      return null;
-    }
-
-    return {
-      clinicId: String(payload.clinicId || '').trim() || undefined,
-      clinicName: String(payload.clinicName || '').trim(),
-      expiresAt: String(payload.expiresAt || payload.expiryDate || '').trim(),
-      expiryDate: String(payload.expiryDate || payload.expiresAt || '').trim(),
-      plan: String(payload.plan || payload.type || '').trim().toLowerCase(),
-      type: String(payload.type || payload.plan || '').trim().toLowerCase(),
-      deviceId: String(payload.deviceId || '').trim().toUpperCase(),
-      signature: String(payload.signature || '').trim().toUpperCase(),
-    };
+    const envelope = JSON.parse(decodeBase64Url(match[1])) as LicenseEnvelope;
+    return envelope.version === 'DP4-LICENSE-1' && envelope.claims?.schema === LICENSE_SCHEMA
+      ? envelope.claims
+      : null;
   } catch {
     return null;
   }
 }
+
+export { canonicalize };

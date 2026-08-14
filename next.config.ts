@@ -29,7 +29,7 @@ const securityHeaders = [
       "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
       // Next.js needs inline styles during dev; lock down in production
       "style-src 'self' 'unsafe-inline'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "script-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self'",
       "frame-ancestors 'none'",

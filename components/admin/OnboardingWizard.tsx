@@ -108,8 +108,8 @@ function validateStep(step: number, data: FormData): string | null {
     if (!data.device_id.trim()) {
       return 'Device ID is required';
     }
-    if (!/^DPDEV-[0-9a-fA-F]{8}$/i.test(data.device_id.trim())) {
-      return 'Device ID must match format: DPDEV-XXXXXXXX (8 hex characters)';
+  if (!/^DPDEV-[0-9a-fA-F]{32}$/i.test(data.device_id.trim())) {
+    return 'Device ID must contain 32 hexadecimal characters';
     }
   }
 

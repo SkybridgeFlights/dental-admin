@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createSessionClient, createAdminClient } from '@/lib/supabase/server';
-import { createLicenseFilePayload, signDP3License } from '@/lib/license/sign';
+import { createAdminClient } from '@/lib/supabase/server';
+import { requireApiAdmin } from '@/lib/auth/require-api-admin';
+import { createSignedLicenseArtifacts } from '@/lib/license/sign';
 import { writeAuditLog } from '@/lib/audit/log';
+import { createHash } from 'crypto';
 
 type PlanType = 'standard' | 'pro' | 'enterprise';
 
@@ -121,22 +123,9 @@ async function ensureOwnerAuthUser(
     throw conflict;
   }
 
-  const { error: updateError } = await admin.auth.admin.updateUserById(existingUser.id, {
-    password: tempPassword,
-    email_confirm: true,
-    user_metadata: {
-      full_name: ownerName,
-    },
-  });
-
-  if (updateError) {
-    throw updateError;
-  }
-
-  return {
-    user: existingUser,
-    mode: existingProfile ? 'reused-existing-profile' : 'reused-auth-user',
-  };
+  const conflict = new Error('OWNER_AUTH_IDENTITY_ALREADY_EXISTS');
+  conflict.name = 'OWNER_AUTH_IDENTITY_ALREADY_EXISTS';
+  throw conflict;
 }
 
 async function rollbackProfile(admin: AdminClient, userId: string) {
@@ -172,15 +161,9 @@ async function rollbackLicenseAudit(admin: AdminClient, clinicId: string, device
 // ---------------------------------------------------------------------------
 export async function POST(request: Request) {
   // --- Auth guard (mirrors /api/license/generate) ---
-  const sessionClient = await createSessionClient();
-  const { data: { user }, error: authError } = await sessionClient.auth.getUser();
-  if (authError || !user) return fail('input', 'UNAUTHORIZED', 403);
-
-  const whitelist = (process.env.ADMIN_EMAIL_WHITELIST ?? '')
-    .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
-  if (whitelist.length > 0 && !whitelist.includes(user.email?.toLowerCase() ?? '')) {
-    return fail('input', 'FORBIDDEN', 403);
-  }
+  const authorization = await requireApiAdmin();
+  if (!authorization.ok) return authorization.response;
+  const user = authorization.user;
 
   // --- Parse body ---
   let body: OnboardingRequest;
@@ -205,8 +188,8 @@ export async function POST(request: Request) {
   if (!expires_at || !/^\d{4}-\d{2}-\d{2}$/.test(expires_at)) {
     return fail('input', 'Expiry date must be in YYYY-MM-DD format');
   }
-  if (!device_id || !/^DPDEV-[0-9a-fA-F]{8}$/i.test(device_id.trim())) {
-    return fail('input', 'Device ID must match format: DPDEV-XXXXXXXX (8 hex characters)');
+  if (!device_id || !/^DPDEV-[0-9a-fA-F]{32}$/i.test(device_id.trim())) {
+    return fail('input', 'Device ID must contain the 32 hexadecimal characters shown by the desktop app');
   }
 
   const admin        = createAdminClient();
@@ -273,7 +256,7 @@ export async function POST(request: Request) {
 
   if (profileError) {
     console.error('[onboarding/run] step=profile', profileError);
-    await rollbackAuthUser(admin, ownerId);
+    if (ownerAuth.mode === 'created') await rollbackAuthUser(admin, ownerId);
     await rollbackClinic(admin, clinicId);
     return fail('profile', profileError.message ?? 'Failed to create owner profile');
   }
@@ -371,8 +354,7 @@ export async function POST(request: Request) {
   let licenseKey: string;
   let licenseFile;
   try {
-    licenseKey = signDP3License(clinic_name.trim(), expires_at, plan_type ?? 'standard', deviceIdNorm, clinicId);
-    licenseFile = createLicenseFilePayload(
+    ({ licenseKey, licenseFile } = createSignedLicenseArtifacts(
       clinic_name.trim(),
       expires_at,
       plan_type ?? 'standard',
@@ -384,14 +366,26 @@ export async function POST(request: Request) {
         ownerSupabaseUserId: ownerId,
         preferredLanguage: 'en',
       },
-    );
+    ));
   } catch (err) {
     console.error('[onboarding/run] step=license sign', err);
     if (isNewDevice) await rollbackDevice(admin, deviceIdNorm);
     await rollbackProfile(admin, ownerId);
-    await rollbackAuthUser(admin, ownerId);
+    if (ownerAuth.mode === 'created') await rollbackAuthUser(admin, ownerId);
     await rollbackClinic(admin, clinicId);
-    return fail('license', 'License signing failed — check LICENSE_HMAC_SECRET configuration', 500);
+    return fail('license', 'License signing failed — check Ed25519 signing configuration', 500);
+  }
+
+  const { error: credentialError } = await admin.from('devices').update({
+    credential_hash: createHash('sha256').update(licenseFile.claims.deviceCredential).digest('hex'),
+    credential_issued_at: new Date().toISOString(),
+  }).eq('device_id', deviceIdNorm).eq('clinic_id', clinicId);
+  if (credentialError) {
+    if (isNewDevice) await rollbackDevice(admin, deviceIdNorm);
+    await rollbackProfile(admin, ownerId);
+    if (ownerAuth.mode === 'created') await rollbackAuthUser(admin, ownerId);
+    await rollbackClinic(admin, clinicId);
+    return fail('device', 'Failed to provision device authentication', 500);
   }
 
   const { error: licenseInsertError } = await admin.from('licenses').insert({
@@ -410,7 +404,7 @@ export async function POST(request: Request) {
     await rollbackLicenseAudit(admin, clinicId, deviceIdNorm);
     if (isNewDevice) await rollbackDevice(admin, deviceIdNorm);
     await rollbackProfile(admin, ownerId);
-    await rollbackAuthUser(admin, ownerId);
+    if (ownerAuth.mode === 'created') await rollbackAuthUser(admin, ownerId);
     await rollbackClinic(admin, clinicId);
     return fail('license', licenseInsertError.message ?? 'Failed to save license record');
   }

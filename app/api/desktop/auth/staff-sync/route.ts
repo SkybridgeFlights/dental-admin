@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { inspectDesktopInternalRequest } from '@/lib/desktop/internal';
+import { authenticateDesktopRequest } from '@/lib/desktop/internal';
 import { upsertClinicAuthUser } from '@/lib/supabase/admin-users';
 
 const ROUTE_INFO = {
@@ -41,16 +41,14 @@ export async function POST(request: Request) {
     url: request.url,
   });
 
-  const auth = inspectDesktopInternalRequest(request);
+  const auth = await authenticateDesktopRequest(request);
   if (!auth.ok) {
-    console.error('[desktop-auth][staff-sync] forbidden', auth);
     return NextResponse.json(
       {
         success: false,
         code: 'FORBIDDEN',
-        reason: auth.reason,
       },
-      { status: 403 },
+      { status: auth.status },
     );
   }
 
@@ -59,6 +57,10 @@ export async function POST(request: Request) {
     body = await request.json();
   } catch {
     return NextResponse.json({ success: false, code: 'INVALID_REQUEST' }, { status: 400 });
+  }
+
+  if (String(body.clinic_id || '') !== String(auth.device.clinic_id || '')) {
+    return NextResponse.json({ success: false, code: 'FORBIDDEN' }, { status: 403 });
   }
 
   const canLogin = Boolean(body.can_login);
@@ -83,8 +85,6 @@ export async function POST(request: Request) {
       existingSupabaseUserId: body.existing_supabase_user_id || null,
       canLogin,
       isActive: body.is_active !== false,
-      authSource: auth.source,
-      authPreview: auth.providedPreview,
     });
 
     const result = await upsertClinicAuthUser({

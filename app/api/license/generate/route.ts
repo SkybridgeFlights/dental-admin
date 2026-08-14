@@ -1,30 +1,17 @@
 import { NextResponse } from 'next/server';
-import { createSessionClient, createAdminClient } from '@/lib/supabase/server';
-import { createLicenseFilePayload, signDP3License } from '@/lib/license/sign';
+import { createAdminClient } from '@/lib/supabase/server';
+import { requireApiAdmin } from '@/lib/auth/require-api-admin';
+import { createSignedLicenseArtifacts } from '@/lib/license/sign';
 import { writeAuditLog } from '@/lib/audit/log';
+import { createHash } from 'crypto';
 
 // POST /api/license/generate
 // Admin-only. Signs a DP3 license server-side and persists the audit record.
 export async function POST(request: Request) {
   // 1. Verify admin session
-  const sessionClient = await createSessionClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await sessionClient.auth.getUser();
-
-  if (authError || !user) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 403 });
-  }
-
-  // Optionally enforce email whitelist (same check as requireAdmin)
-  const whitelist = (process.env.ADMIN_EMAIL_WHITELIST ?? '')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  if (whitelist.length > 0 && !whitelist.includes(user.email?.toLowerCase() ?? '')) {
-    return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-  }
+  const authorization = await requireApiAdmin();
+  if (!authorization.ok) return authorization.response;
+  const user = authorization.user;
 
   // 2. Parse and validate input
   let body: {
@@ -51,7 +38,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'INVALID_EXPIRY_DATE_FORMAT' }, { status: 400 });
   }
 
-  if (!/^DPDEV-[0-9a-fA-F]{8}$/.test(deviceId)) {
+  if (!/^DPDEV-[0-9a-fA-F]{32}$/.test(deviceId)) {
     return NextResponse.json({ error: 'INVALID_DEVICE_ID_FORMAT' }, { status: 400 });
   }
 
@@ -116,8 +103,7 @@ export async function POST(request: Request) {
   let licenseKey: string;
   let licenseFile;
   try {
-    licenseKey = signDP3License(clinicName, expiryDate, licenseType, deviceId, clinicId);
-    licenseFile = createLicenseFilePayload(
+    ({ licenseKey, licenseFile } = createSignedLicenseArtifacts(
       clinicName,
       expiryDate,
       licenseType,
@@ -131,7 +117,7 @@ export async function POST(request: Request) {
             preferredLanguage: ownerProfile.preferred_language,
           }
         : null,
-    );
+    ));
   } catch (err) {
     console.error('[license/generate] signing failed:', err);
     return NextResponse.json({ error: 'SIGNING_FAILED' }, { status: 500 });
@@ -142,47 +128,18 @@ export async function POST(request: Request) {
   //     GET /api/license/latest already filters revoked_at IS NULL, so it will
   //     naturally return only the new key after this point.
   //     Failure is logged but does not block generation.
-  const { error: revokeError } = await admin
-    .from('licenses')
-    .update({ revoked_at: new Date().toISOString() })
-    .eq('clinic_id', clinicId)
-    .eq('device_id', deviceId)
-    .is('revoked_at', null);
-
-  if (revokeError) {
-    console.error('[license/generate] revoke previous licenses failed:', revokeError);
-  }
-
-  // 7b. Upsert device (first activation or re-license of existing device)
-  const { error: deviceUpsertError } = await admin
-    .from('devices')
-    .upsert(
-      {
-        device_id:    deviceId,
-        clinic_id:    clinicId,
-        activated_at: existingDevice ? undefined : new Date().toISOString(),
-        status:       'active',
-      },
-      { onConflict: 'device_id', ignoreDuplicates: false },
-    );
-
-  if (deviceUpsertError) {
-    console.error('[license/generate] device upsert failed:', deviceUpsertError);
-    return NextResponse.json({ error: 'DATABASE_ERROR' }, { status: 500 });
-  }
-
-  // 8. Insert license audit record
-  const { error: licenseInsertError } = await admin.from('licenses').insert({
-    clinic_id:    clinicId,
-    device_id:    deviceId,
-    license_key:  licenseKey,
-    license_type: licenseType as 'standard' | 'pro' | 'enterprise',
-    expires_at:   new Date(expiryDate).toISOString(),
-    generated_by: user.email,
+  const { error: replacementError } = await admin.rpc('replace_device_license', {
+    p_clinic_id: clinicId,
+    p_device_id: deviceId,
+    p_license_key: licenseKey,
+    p_license_type: licenseType,
+    p_expires_at: licenseFile.claims.expiresAt,
+    p_generated_by: user.email,
+    p_credential_hash: createHash('sha256').update(licenseFile.claims.deviceCredential).digest('hex'),
   });
 
-  if (licenseInsertError) {
-    console.error('[license/generate] license insert failed:', licenseInsertError);
+  if (replacementError) {
+    console.error('[license/generate] atomic replacement failed');
     return NextResponse.json({ error: 'DATABASE_ERROR' }, { status: 500 });
   }
 

@@ -13,7 +13,8 @@ const REQUIRED_VARS = [
   'NEXT_PUBLIC_SUPABASE_URL',
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
-  'LICENSE_HMAC_SECRET',
+  'LICENSE_ED25519_PRIVATE_KEY',
+  'LICENSE_SIGNING_KEY_ID',
   'ADMIN_EMAIL_WHITELIST',
 ] as const;
 
@@ -48,7 +49,7 @@ function checkEnvVars(): { ok: boolean; missing: RequiredVar[]; placeholder: str
     const val = process.env[key];
     if (!val) {
       missing.push(key);
-    } else if (key === 'LICENSE_HMAC_SECRET' && val === 'your-hmac-secret') {
+    } else if (val.startsWith('your-') || val.startsWith('replace-')) {
       placeholder.push(key);
     }
   }
@@ -127,20 +128,13 @@ async function checkSchema(): Promise<{ ok: boolean; missing: string[] }> {
 
 // ── 5. Whitelist display ──────────────────────────────────────────────────────
 
-function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  if (!domain) return '***';
-  const masked = local.length <= 2 ? '***' : `${local[0]}***${local[local.length - 1]}`;
-  return `${masked}@${domain}`;
-}
-
 function logWhitelist() {
   const raw = process.env.ADMIN_EMAIL_WHITELIST ?? '';
   const emails = raw.split(',').map((e) => e.trim()).filter(Boolean);
   if (emails.length === 0) {
     log('warn', 'ADMIN_EMAIL_WHITELIST is empty — no one can log in');
   } else {
-    log('info', `Admin whitelist (${emails.length} email${emails.length === 1 ? '' : 's'}): ${emails.map(maskEmail).join(', ')}`);
+    log('info', `Admin whitelist configured (${emails.length} entries)`);
   }
 }
 
@@ -154,13 +148,14 @@ export async function validateStartup(): Promise<void> {
   if (env.missing.length > 0) {
     log('error', `Missing required env vars — add these to .env.local:\n         ${env.missing.join('\n         ')}`);
     log('error', 'Server will not function correctly until all env vars are set');
-    // Do NOT throw — let the server start so error messages are visible in logs
+    if (process.env.NODE_ENV === 'production') throw new Error('SECURITY_CONFIGURATION_MISSING');
   } else {
     log('info', 'All required env vars are present');
   }
 
   if (env.placeholder.length > 0) {
-    log('warn', `LICENSE_HMAC_SECRET is still the placeholder value "your-hmac-secret".\n         License generation will fail. Set the real secret from the desktop app.`);
+    log('error', 'Security configuration contains placeholder values');
+    if (process.env.NODE_ENV === 'production') throw new Error('SECURITY_CONFIGURATION_PLACEHOLDER');
   }
 
   // 2. Project ID cross-check
