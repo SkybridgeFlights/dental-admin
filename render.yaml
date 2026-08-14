@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: dentalpro-admin-staging
+    runtime: node
+    branch: hardening/production-rc
+    autoDeployTrigger: off
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: DENTALPRO_ENVIRONMENT
+        value: staging
+      - key: LICENSE_SIGNING_KEY_ID
+        value: dentalpro-staging-2026-01
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_EMAIL_WHITELIST
+        sync: false
+      - key: LICENSE_ED25519_PRIVATE_KEY
+        sync: false
