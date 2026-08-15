@@ -1,7 +1,27 @@
+# DentalPro Admin - STAGING Blueprint
+#
+# FREE TIER ONLY. This Blueprint must never require a payment method.
+#
+# Constraints deliberately enforced here:
+#   - plan: free              -> Render Free Web Service (an omitted `plan` defaults
+#                                to `starter`, which is PAID and triggers Render's
+#                                "Payment Information Required" prompt)
+#   - no `disk:`              -> persistent disks are a paid-only feature
+#   - no `numInstances`/`scaling` -> autoscaling / multi-instance is paid-only
+#   - no `maxShutdownDelaySeconds` -> paid-only maintenance/zero-downtime tuning
+#   - type is `web` only      -> no pserv (private service), no worker, no cron
+#   - no `databases:` block   -> no paid Postgres
+#   - no Key Value / Redis service
+#   - exactly ONE service in this Blueprint
+#
+# Free instance caveats (accepted for staging): 512 MB RAM, 0.1 CPU, and the
+# instance spins down after ~15 minutes of inactivity (cold start on next request).
+
 services:
   - type: web
     name: dentalpro-admin-staging
     runtime: node
+    plan: free
     branch: hardening/production-rc
     autoDeployTrigger: off
     buildCommand: npm ci && npm run build
