@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/admin-policy.test.ts test/license-signing.test.ts test/schema-validation.test.ts"
+    "test": "tsx --test test/admin-policy.test.ts test/license-signing.test.ts test/schema-validation.test.ts test/schema-sql-ordering.test.ts"
   },
   "overrides": {
     "picomatch": "4.0.5"

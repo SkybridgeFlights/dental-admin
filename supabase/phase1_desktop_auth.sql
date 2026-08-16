@@ -1,6 +1,21 @@
 -- ================================================================
 -- DentalPro Desktop Auth - Phase 1 prerequisites
--- Run in Supabase SQL editor before enabling desktop Supabase auth.
+--
+-- ***  SUPERSEDED — DO NOT APPLY  ***
+--
+-- Replaced by supabase/schema_profiles.sql, which creates the same profiles
+-- table and the same three read policies AND additionally replaces the
+-- anon-block policies on clinics/devices and updates the clinic_summary view.
+--
+-- Applying both files will FAIL: they create policies with identical names
+-- ("profiles_self_read", "clinics_own_read", "devices_clinic_read").
+--
+-- Retained for migration history only. The canonical apply order for a fresh
+-- database is:
+--   1. schema.sql
+--   2. schema_profiles.sql        <-- use this, not this file
+--   3. 003_audit_log.sql
+--   4. 004_device_auth_and_atomic_license.sql
 -- ================================================================
 
 -- Ensure profiles table exists with required columns.
