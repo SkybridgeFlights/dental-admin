@@ -45,6 +45,13 @@ const APPLY_ORDER = [
   'schema_profiles.sql',
   '003_audit_log.sql',
   '004_device_auth_and_atomic_license.sql',
+  '005_rls_deny_by_default.sql',
+];
+
+/** Tables that must never be readable by the anon or authenticated roles. */
+const SENSITIVE_TABLES = [
+  'clinics', 'devices', 'licenses', 'profiles',
+  'admin_audit_logs', 'device_request_nonces',
 ];
 
 test('REGRESSION: no policy references a table created later in the same file', () => {
@@ -67,14 +74,14 @@ test('REGRESSION: no policy references a table created later in the same file', 
   }
 });
 
-test('schema_profiles.sql creates the profiles table before its dependent policies', () => {
+test('schema_profiles.sql creates the profiles table before any policy referencing it', () => {
   const sql = stripComments(read('schema_profiles.sql'));
   const table = createTableIndex(sql, 'profiles');
   assert.ok(table !== -1, 'schema_profiles.sql must create the profiles table');
 
-  const dependent = policyStatements(sql).filter((p) => /FROM\s+profiles\b/i.test(p.body));
-  assert.ok(dependent.length >= 2, 'expected clinics_own_read and devices_clinic_read');
-  for (const p of dependent) {
+  // Currently the policies are deny-all and reference nothing, so this may be
+  // empty — the guarantee is that IF such a policy is added it must come after.
+  for (const p of policyStatements(sql).filter((x) => /FROM\s+profiles\b/i.test(x.body))) {
     assert.ok(table < p.index, 'profiles table must be created before policies that select from it');
   }
 });
@@ -134,11 +141,16 @@ test('phase1_desktop_auth.sql is marked superseded and excluded from apply order
   assert.match(raw, /SUPERSEDED/i, 'must be clearly marked superseded');
   assert.ok(!APPLY_ORDER.includes('phase1_desktop_auth.sql'), 'must not be in the apply order');
 
-  // It duplicates policy names with schema_profiles.sql; applying both fails.
-  const names = (f: string) =>
-    [...stripComments(read(f)).matchAll(/CREATE\s+POLICY\s+"([^"]+)"/gi)].map((m) => m[1]);
-  const overlap = names('phase1_desktop_auth.sql').filter((n) => names('schema_profiles.sql').includes(n));
-  assert.ok(overlap.length > 0, 'expected the duplicate policy names that justify superseding');
+  // It duplicates the profiles table (and historically the policy names) with
+  // schema_profiles.sql, which is why only one of the two may be applied.
+  const tables = (f: string) =>
+    [...stripComments(read(f)).matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)/gi)]
+      .map((m) => m[1].toLowerCase());
+  const overlap = tables('phase1_desktop_auth.sql').filter((t) => tables('schema_profiles.sql').includes(t));
+  assert.ok(
+    overlap.includes('profiles'),
+    'expected the duplicated profiles table that justifies superseding phase1_desktop_auth.sql',
+  );
 });
 
 test('every .sql file in supabase/ is either in the apply order or marked superseded', () => {

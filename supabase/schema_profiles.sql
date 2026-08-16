@@ -9,13 +9,14 @@
 -- only — applying both will fail on duplicate policy names.
 --
 -- ORDERING CONTRACT (do not reorder):
---   The clinics_own_read and devices_clinic_read policies contain
---   `SELECT clinic_id FROM profiles`. Postgres parses and validates a policy
---   expression at CREATE POLICY time, so the profiles TABLE must exist before
---   those policies are created. An earlier revision of this file created the
---   policies first and failed on a fresh database with:
+--   Postgres parses and validates a policy expression at CREATE POLICY time,
+--   so every table a policy references must already exist. An earlier revision
+--   created policies selecting `FROM profiles` before the profiles table and
+--   failed on any fresh database with:
 --       42P01: relation "profiles" does not exist
 --   Sections are therefore ordered: table -> RLS enable -> policies -> view.
+--   The current policies are deny-all and reference no other table, but the
+--   ordering is kept so that adding a referencing policy later stays safe.
 --   test/schema-sql-ordering.test.ts enforces this and will fail if the
 --   dependency order regresses.
 -- ================================================================
@@ -58,57 +59,49 @@ ALTER TABLE clinics  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE devices  ENABLE ROW LEVEL SECURITY;
 
 -- ================================================================
--- SECTION 2: RLS policies
+-- SECTION 2: RLS policies — DENY BY DEFAULT
 --
--- schema.sql ships `AS RESTRICTIVE USING (false)` on clinics and devices,
--- which blocks EVERYONE including authenticated users. These are replaced
--- with the anon-scoped restriction below so the desktop app (user JWT) can
--- read its own clinic and device rows. The admin dashboard uses the service
--- role key, which bypasses RLS entirely and is unaffected either way.
+-- Trust model, traced from production code:
+--   every read/write of these tables goes through createAdminClient()
+--   (service_role, server-side only). The browser Supabase client and
+--   createSessionClient use the anon key for auth calls ONLY and never call
+--   .from(). The Desktop app uses the anon key only against /auth/v1/* and
+--   gets licence state from the Render API (/api/license/check); it never
+--   calls PostgREST. So NO component needs anon or authenticated access here.
 --
--- NOTE: the restriction predicate is preserved verbatim from the previous
--- revision of this file. See the review note at the bottom before changing it.
+-- An earlier revision shipped `AS RESTRICTIVE USING (auth.role() = 'anon')`,
+-- intending to block anon while letting authenticated users read. Because
+-- PostgreSQL composes policies as
+--     visible <=> (any PERMISSIVE passes) AND (all RESTRICTIVE pass)
+-- that predicate passed the restrictive gate for anon and FAILED it for
+-- authenticated — the inverse of its name — which also made the accompanying
+-- permissive read policies permanently dead. It was fail-closed (nothing
+-- leaked) but structurally wrong.
+--
+-- The correct minimum architecture is a single unambiguous deny-all per
+-- table. service_role bypasses RLS and is how the application operates.
+-- Do NOT relax this to enable direct desktop reads; add a narrowly scoped
+-- permissive policy in a separate reviewed migration if that is ever needed.
+-- See supabase/005_rls_deny_by_default.sql.
 -- ================================================================
 
 -- clinics
-DROP POLICY IF EXISTS "deny anon" ON clinics;
-CREATE POLICY "deny anon" ON clinics
-  AS RESTRICTIVE
-  USING (auth.role() = 'anon');
-
+DROP POLICY IF EXISTS "deny anon"        ON clinics;
 DROP POLICY IF EXISTS "clinics_own_read" ON clinics;
-CREATE POLICY "clinics_own_read" ON clinics
-  FOR SELECT
-  USING (
-    -- Authenticated user can read the clinic they belong to
-    id IN (SELECT clinic_id FROM profiles WHERE id = auth.uid())
-  );
+DROP POLICY IF EXISTS "deny_all"         ON clinics;
+CREATE POLICY "deny_all" ON clinics AS RESTRICTIVE USING (false) WITH CHECK (false);
 
 -- devices
-DROP POLICY IF EXISTS "deny anon" ON devices;
-CREATE POLICY "deny anon" ON devices
-  AS RESTRICTIVE
-  USING (auth.role() = 'anon');
-
+DROP POLICY IF EXISTS "deny anon"           ON devices;
 DROP POLICY IF EXISTS "devices_clinic_read" ON devices;
-CREATE POLICY "devices_clinic_read" ON devices
-  FOR SELECT
-  USING (
-    -- Authenticated user can read devices belonging to their clinic
-    clinic_id IN (SELECT clinic_id FROM profiles WHERE id = auth.uid())
-  );
+DROP POLICY IF EXISTS "deny_all"            ON devices;
+CREATE POLICY "deny_all" ON devices AS RESTRICTIVE USING (false) WITH CHECK (false);
 
 -- profiles
-DROP POLICY IF EXISTS "deny anon" ON profiles;
-CREATE POLICY "deny anon" ON profiles
-  AS RESTRICTIVE
-  USING (auth.role() = 'anon');
-
--- Authenticated user can read ONLY their own profile row
+DROP POLICY IF EXISTS "deny anon"          ON profiles;
 DROP POLICY IF EXISTS "profiles_self_read" ON profiles;
-CREATE POLICY "profiles_self_read" ON profiles
-  FOR SELECT
-  USING (auth.uid() = id);
+DROP POLICY IF EXISTS "deny_all"           ON profiles;
+CREATE POLICY "deny_all" ON profiles AS RESTRICTIVE USING (false) WITH CHECK (false);
 
 -- ================================================================
 -- SECTION 3: Helper view update — include profile count per clinic
@@ -131,18 +124,3 @@ LEFT JOIN devices  d ON d.clinic_id = c.id
 LEFT JOIN licenses l ON l.clinic_id = c.id
 LEFT JOIN profiles p ON p.clinic_id = c.id
 GROUP BY c.id;
-
--- ================================================================
--- REVIEW NOTE — unresolved, deliberately NOT changed here
---
--- The three `AS RESTRICTIVE USING (auth.role() = 'anon')` policies read as
--- inverted relative to the stated intent. RESTRICTIVE policies are ANDed, so
--- a row is visible only when the predicate is true: this grants the check to
--- anon and DENIES every authenticated user, which would stop the desktop app
--- reading its own clinic/device/profile rows. Blocking anon while allowing
--- authenticated users requires `USING (auth.role() <> 'anon')`.
---
--- This is fail-closed (more restrictive than intended), not a data leak, so
--- the predicate is preserved verbatim rather than silently relaxed. Flip it
--- only as a deliberate, reviewed change once desktop read access is tested.
--- ================================================================
