@@ -153,6 +153,39 @@ test('phase1_desktop_auth.sql is marked superseded and excluded from apply order
   );
 });
 
+test('REGRESSION: a view redefined by a later file must be dropped first', () => {
+  // CREATE OR REPLACE VIEW can only APPEND columns. If a later file redefines a
+  // view with a different column ORDER or with a new column inserted before an
+  // existing one, Postgres fails with 42P16. schema.sql defines clinic_summary
+  // ending in last_device_seen; schema_profiles.sql inserts user_count before
+  // it, so it must DROP VIEW first. Caught empirically on a fresh schema.
+  const defs = new Map<string, { file: string; cols: string[] }>();
+  for (const file of APPLY_ORDER) {
+    const sql = stripComments(read(file));
+    const re = /CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([a-z_][a-z0-9_]*)\s+AS\s+SELECT([\s\S]*?);/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sql)) !== null) {
+      const name = m[1].toLowerCase();
+      // column aliases: "... AS alias" plus bare "c.col" projections
+      const cols = [...m[2].matchAll(/\bAS\s+([a-z_][a-z0-9_]*)/gi)].map((x) => x[1].toLowerCase());
+      const prev = defs.get(name);
+      if (prev) {
+        const sameOrder = prev.cols.every((c, i) => cols[i] === c);
+        if (!sameOrder) {
+          const dropped = new RegExp(`DROP\\s+VIEW\\s+(IF\\s+EXISTS\\s+)?${name}\\b`, 'i').test(sql);
+          assert.ok(
+            dropped,
+            `${file} redefines view "${name}" with a changed column order but never drops it. ` +
+              `CREATE OR REPLACE VIEW cannot reorder or rename columns — this fails with 42P16 ` +
+              `on a fresh database. Add DROP VIEW IF EXISTS ${name}; before the definition.`,
+          );
+        }
+      }
+      defs.set(name, { file, cols });
+    }
+  }
+});
+
 test('every .sql file in supabase/ is either in the apply order or marked superseded', () => {
   for (const f of readdirSync(SUPABASE_DIR).filter((f) => f.endsWith('.sql'))) {
     if (APPLY_ORDER.includes(f)) continue;

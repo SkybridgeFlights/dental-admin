@@ -105,8 +105,17 @@ CREATE POLICY "deny_all" ON profiles AS RESTRICTIVE USING (false) WITH CHECK (fa
 
 -- ================================================================
 -- SECTION 3: Helper view update — include profile count per clinic
+--
+-- MUST drop first. schema.sql already defines clinic_summary ending in
+-- last_device_seen; this revision inserts user_count BEFORE it. CREATE OR
+-- REPLACE VIEW can only APPEND columns — it cannot rename or reorder them —
+-- so replacing in place fails on any fresh database with:
+--     42P16: cannot change name of view column "last_device_seen" to "user_count"
+-- clinic_summary is a debugging helper with no dependants, so dropping it is
+-- safe. Caught by the fresh-schema empirical test; do not remove this DROP.
 -- ================================================================
-CREATE OR REPLACE VIEW clinic_summary AS
+DROP VIEW IF EXISTS clinic_summary;
+CREATE VIEW clinic_summary AS
 SELECT
   c.id,
   c.clinic_name,
