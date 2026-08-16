@@ -99,7 +99,70 @@ async function pingSupabase(): Promise<{ ok: boolean; error?: string }> {
 
 // ── 4. Schema table check ────────────────────────────────────────────────────
 
-async function checkSchema(): Promise<{ ok: boolean; missing: string[] }> {
+export const REQUIRED_TABLES = ['clinics', 'devices', 'licenses'] as const;
+export type RequiredTable = (typeof REQUIRED_TABLES)[number];
+
+/**
+ * Recognises the many ways PostgREST/Supabase report a missing relation.
+ * Postgres itself says `relation "public.x" does not exist` (SQLSTATE 42P01),
+ * but PostgREST answers from its schema cache with wording like
+ * `Could not find the table 'public.clinics' in the schema cache` (PGRST205),
+ * which contains neither "relation" nor "does not exist". Matching only the
+ * Postgres wording is what produced the false green.
+ */
+export function isMissingRelationError(message?: string | null, code?: string | null): boolean {
+  const normalized = String(message ?? '').toLowerCase();
+  const sqlState = String(code ?? '').toUpperCase();
+
+  // SQLSTATE 42P01 = undefined_table; PGRST20x = PostgREST schema-cache lookup miss
+  if (sqlState === '42P01' || /^PGRST20\d$/.test(sqlState)) return true;
+
+  return (
+    /relation .* does not exist/.test(normalized) ||
+    normalized.includes('does not exist') ||
+    normalized.includes('could not find the table') ||
+    normalized.includes('could not find table') ||
+    normalized.includes('in the schema cache') ||
+    normalized.includes('schema cache') ||
+    normalized.includes('undefined table') ||
+    normalized.includes('unknown table') ||
+    normalized.includes('no such table')
+  );
+}
+
+export type TableProbe = { table: string; error?: { message?: string | null; code?: string | null } | null };
+
+/**
+ * Fail-closed evaluation. A table counts as verified ONLY when its probe came
+ * back with no error at all. Anything else — a recognised missing-relation
+ * error, a permission error, a network blip, an unparsable response — leaves
+ * the table unverified. We never infer presence from an error we do not
+ * recognise.
+ */
+export function evaluateSchemaResults(probes: TableProbe[], required: readonly string[] = REQUIRED_TABLES) {
+  const verified: string[] = [];
+  const missing: string[] = [];
+  const unverifiable: { table: string; reason: string }[] = [];
+
+  for (const table of required) {
+    const probe = probes.find((p) => p.table === table);
+    if (!probe) {
+      unverifiable.push({ table, reason: 'no probe result' });
+      continue;
+    }
+    if (!probe.error) {
+      verified.push(table);
+    } else if (isMissingRelationError(probe.error.message, probe.error.code)) {
+      missing.push(table);
+    } else {
+      unverifiable.push({ table, reason: String(probe.error.message ?? 'unknown error') });
+    }
+  }
+
+  return { ok: missing.length === 0 && unverifiable.length === 0, verified, missing, unverifiable };
+}
+
+async function checkSchema(): Promise<ReturnType<typeof evaluateSchemaResults>> {
   try {
     const { createClient } = await import('@supabase/supabase-js');
     const client = createClient(
@@ -108,21 +171,19 @@ async function checkSchema(): Promise<{ ok: boolean; missing: string[] }> {
       { auth: { persistSession: false } },
     );
 
-    const tables = ['clinics', 'devices', 'licenses'] as const;
-    const missing: string[] = [];
-
-    await Promise.all(
-      tables.map(async (table) => {
+    const probes: TableProbe[] = await Promise.all(
+      REQUIRED_TABLES.map(async (table) => {
         const { error } = await client.from(table).select('*').limit(0);
-        if (error?.message.includes('does not exist') || error?.message.includes('relation')) {
-          missing.push(table);
-        }
+        return { table, error: error ? { message: error.message, code: error.code } : null };
       }),
     );
 
-    return { ok: missing.length === 0, missing };
+    return evaluateSchemaResults(probes);
   } catch (err: unknown) {
-    return { ok: false, missing: ['clinics', 'devices', 'licenses'] };
+    // Total failure to probe is itself fail-closed: nothing is verified.
+    return evaluateSchemaResults(
+      REQUIRED_TABLES.map((table) => ({ table, error: { message: String(err), code: null } })),
+    );
   }
 }
 
@@ -177,12 +238,19 @@ export async function validateStartup(): Promise<void> {
       log('error', `Supabase connection failed: ${ping.error}`);
     }
 
-    // 4. Schema check
+    // 4. Schema check — fail-closed: only a clean probe counts as verified
     const schema = await checkSchema();
     if (schema.ok) {
-      log('info', 'Database schema verified (clinics, devices, licenses)');
+      log('info', `Database schema verified (${schema.verified.join(', ')})`);
     } else {
-      log('error', `Database schema not applied — missing tables: ${schema.missing.join(', ')}.\n         Run supabase/schema.sql in your Supabase SQL editor.`);
+      if (schema.missing.length > 0) {
+        log('error', `Database schema not applied — missing tables: ${schema.missing.join(', ')}.\n         Run supabase/schema.sql in your Supabase SQL editor.`);
+      }
+      for (const { table, reason } of schema.unverifiable) {
+        log('error', `Table "${table}" could not be verified: ${reason}`);
+      }
+      log('error', 'Schema verification failed — treating as NOT verified');
+      if (process.env.NODE_ENV === 'production') throw new Error('SECURITY_SCHEMA_NOT_VERIFIED');
     }
   }
 
