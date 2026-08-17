@@ -168,6 +168,29 @@ export function resolveBootstrap(input: {
   };
 }
 
+/**
+ * Staging-only fault injection, mirroring the mechanism already used by
+ * /api/license/check. It exists so the fail-closed behaviour of this endpoint
+ * (a failed read must yield 503, never a fabricated or empty identity) can be
+ * demonstrated against the real deployed service rather than only in unit tests.
+ *
+ * It is inert unless DENTALPRO_ENVIRONMENT is exactly "staging" — asserted by
+ * lib/license/status.ts tests and by the tests for this module.
+ */
+export function bootstrapFaultTarget(
+  request: { headers: { get(name: string): string | null } },
+  armed: boolean,
+): 'profiles' | 'clinics' | null {
+  if (!armed) return null;
+  const target = request.headers.get('x-staging-fault-injection');
+  return target === 'profiles' || target === 'clinics' ? target : null;
+}
+
+/** Narrow any outcome to a failure. Can only ever reduce availability. */
+export function forceFailure<T>(_outcome: QueryOutcome<T>): QueryOutcome<T> {
+  return { ok: false };
+}
+
 function emptyToNull(value: string | null | undefined): string | null {
   const trimmed = String(value ?? '').trim();
   return trimmed === '' ? null : trimmed;

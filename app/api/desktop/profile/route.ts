@@ -4,6 +4,8 @@ import { verifyRequestSubject } from '@/lib/desktop/access-token';
 import {
   CLINIC_COLUMNS,
   PROFILE_COLUMNS,
+  bootstrapFaultTarget,
+  forceFailure,
   projectBootstrapBody,
   resolveBootstrap,
   toOutcome,
@@ -11,6 +13,7 @@ import {
   type ProfileRow,
   type QueryOutcome,
 } from '@/lib/desktop/bootstrap';
+import { isFaultInjectionArmed } from '@/lib/license/status';
 
 // GET /api/desktop/profile
 //
@@ -53,15 +56,20 @@ export async function GET(request: Request) {
   const userId = subject.userId;
   const admin = createAdminClient();
 
+  // Staging-only, and evaluated strictly AFTER authentication so it can never
+  // be used as an unauthenticated probe.
+  const fault = bootstrapFaultTarget(request, isFaultInjectionArmed());
+
   // Identity comes from the verified token only. There is no code path by which
   // a query-string or body value could reach this filter.
-  const profile = toOutcome<ProfileRow>(
+  let profile = toOutcome<ProfileRow>(
     (await admin
       .from('profiles')
       .select(PROFILE_COLUMNS.join(', '))
       .eq('id', userId)
       .maybeSingle()) as { data: ProfileRow | null; error: unknown },
   );
+  if (fault === 'profiles') profile = forceFailure(profile);
 
   let clinic: QueryOutcome<ClinicRow> | undefined;
   const clinicId =
@@ -75,6 +83,7 @@ export async function GET(request: Request) {
         .eq('id', clinicId)
         .maybeSingle()) as { data: ClinicRow | null; error: unknown },
     );
+    if (fault === 'clinics') clinic = forceFailure(clinic);
   }
 
   const resolved = resolveBootstrap({ subjectUserId: userId, profile, clinic });

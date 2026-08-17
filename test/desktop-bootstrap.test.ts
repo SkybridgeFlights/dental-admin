@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  bootstrapFaultTarget,
+  forceFailure,
   parseBearerToken,
   projectBootstrapBody,
   resolveBootstrap,
@@ -416,6 +418,50 @@ test('the bootstrap endpoint does not consult the admin whitelist', () => {
     assert.ok(!/ADMIN_EMAIL_WHITELIST/.test(bare), 'no code path may read the admin whitelist');
     assert.ok(!/requireApiAdmin|requireAdmin|authorizeAdminEmail/.test(bare));
   }
+});
+
+// ── staging fault injection safety ───────────────────────────────────────────
+
+test('fault injection is inert unless explicitly armed', () => {
+  const req = (v: string) => ({ headers: { get: () => v } });
+  for (const target of ['profiles', 'clinics', 'devices', 'anything']) {
+    assert.equal(
+      bootstrapFaultTarget(req(target), false), null,
+      `must be inert when disarmed (target=${target})`,
+    );
+  }
+});
+
+test('fault injection accepts only the two known targets when armed', () => {
+  const req = (v: string | null) => ({ headers: { get: () => v } });
+  assert.equal(bootstrapFaultTarget(req('profiles'), true), 'profiles');
+  assert.equal(bootstrapFaultTarget(req('clinics'), true), 'clinics');
+  assert.equal(bootstrapFaultTarget(req('devices'), true), null);
+  assert.equal(bootstrapFaultTarget(req('__proto__'), true), null);
+  assert.equal(bootstrapFaultTarget(req(null), true), null, 'absent header must be inert');
+});
+
+test('an injected fault can only ever reduce availability', () => {
+  assert.deepEqual(forceFailure({ ok: true, data: { id: 'x' } }), { ok: false });
+  assert.deepEqual(forceFailure({ ok: false }), { ok: false });
+  // and a forced failure must produce 503, never a 200 or a 404
+  const r = resolveBootstrap({ subjectUserId: USER_A, profile: forceFailure(profileA) });
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.status, 503);
+});
+
+test('fault injection is evaluated only after authentication', () => {
+  const authAt = ROUTE_SRC.indexOf('verifyRequestSubject(request)');
+  const guardAt = ROUTE_SRC.indexOf("fail(401, 'UNAUTHENTICATED')");
+  const faultAt = ROUTE_SRC.indexOf('bootstrapFaultTarget(request');
+  assert.ok(authAt !== -1 && guardAt !== -1 && faultAt !== -1);
+  assert.ok(authAt < faultAt, 'authentication must precede fault evaluation');
+  assert.ok(
+    guardAt < faultAt,
+    'the 401 guard must precede fault evaluation so it cannot be an unauthenticated probe',
+  );
+  // and it must be gated on the shared armed check, not its own looser rule
+  assert.match(ROUTE_SRC, /bootstrapFaultTarget\(request, isFaultInjectionArmed\(\)\)/);
 });
 
 test('RLS must never be opened to accommodate the Desktop bootstrap', () => {
