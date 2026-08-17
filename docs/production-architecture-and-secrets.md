@@ -19,18 +19,22 @@ reference environment.
    └───────┬──────────────┬───────┘
            │              │
            │ (1) GoTrue   │ (2) licence status
-           │ /auth/v1/*   │ POST /api/license/check
-           │ anon key     │ Bearer <deviceCredential>
+           │ /auth/v1/*   │     POST /api/license/check
+           │ anon key     │     Bearer <deviceCredential>
+           │              │ (3) identity bootstrap
+           │              │     GET /api/desktop/profile
+           │              │     Bearer <user access token>
            ▼              ▼
    ┌───────────────┐   ┌──────────────────────────────┐
    │ Supabase Auth │   │  Render Web Service (Admin)  │
    │  (GoTrue)     │   │  Next.js, Node 22.14.0       │
    └───────────────┘   │  • service_role key          │
-           │           │  • Ed25519 PRIVATE key       │
-           │ (3)       │  • admin whitelist           │
-           │ PostgREST │  • signs DP4 envelopes       │
-           │ profiles  └──────────┬───────────────────┘
-           ▼                      │ service_role (bypasses RLS)
+                       │  • Ed25519 PRIVATE key       │
+                       │  • admin whitelist           │
+                       │  • signs DP4 envelopes       │
+                       └──────────┬───────────────────┘
+      NO Desktop path             │ service_role (bypasses RLS)
+      to PostgREST                │
    ┌──────────────────────────────▼───────────────────┐
    │ Supabase Postgres                                │
    │  clinics · devices · licenses · profiles         │
@@ -49,10 +53,12 @@ reference environment.
 | Cached offline auth entitlement | local app store |
 | Activated licence envelope | local app store |
 
-**Confirmed:** the Desktop repository contains **no** write path to Supabase for
-clinical data. Its only Supabase calls are `/auth/v1/*` (GoTrue) and one
-`GET /rest/v1/profiles?select=*,clinics!clinic_id(clinic_name)` identity lookup.
-No `POST/PATCH/DELETE` to PostgREST exists anywhere in the Desktop codebase.
+**Confirmed:** the Desktop repository contains **no** path to Supabase PostgREST
+at all — neither read nor write. Its only Supabase calls are `/auth/v1/settings`
+and `/auth/v1/token` (GoTrue). The identity lookup goes to the Admin service
+(`GET /api/desktop/profile`). Enforced by `test/identity-boundary.test.js`,
+which fails the build if any main-process file references `/rest/v1` or names a
+protected table.
 
 ### B. Data stored in Supabase (licensing / identity only)
 
@@ -90,40 +96,46 @@ server-side with `service_role`; all gated by `requireApiAdmin()` against
 | Component | Transport | Supabase role | May read tables? |
 |---|---|---|---|
 | Desktop → GoTrue | `/auth/v1/*` | anon | n/a (auth only) |
-| Desktop → PostgREST | `GET /rest/v1/profiles` | **authenticated** (user JWT) | **see OPEN ISSUE** |
+| Desktop → PostgREST | **none** | — | **no path exists** |
 | Desktop → Admin API | `POST /api/license/check` | none (device credential) | no |
+| Desktop → Admin API | `GET /api/desktop/profile` | none directly; server uses service_role after verifying the user's token | only that user's own row |
 | Admin browser | Supabase JS | anon | auth calls only, never `.from()` |
 | Admin server | server components / routes | **service_role** | yes (bypasses RLS) |
 
-### OPEN ISSUE — desktop profile read vs `deny_all`
+### RESOLVED — desktop identity bootstrap (Option A)
 
-`electron/services/supabase-auth-service.js::fetchProfile` performs an
-authenticated PostgREST read of `profiles` joined to `clinics`. Migration 005
-installs `deny_all` (RESTRICTIVE `USING (false)`) on both tables, so that read
-returns **zero rows** and login fails with `SUPABASE_PROFILE_LINK_FAILED`,
-which `auth-handlers.js` treats as fatal. The offline cache only helps *after*
-a first successful online login, so first-run activation cannot complete.
+**Background.** `fetchProfile` used to perform an authenticated PostgREST read
+of `profiles` joined to `clinics`. Migration 005 installs `deny_all`
+(RESTRICTIVE `USING (false)`) on both tables, so that read returned **zero
+rows** and login failed with `SUPABASE_PROFILE_LINK_FAILED`, which
+`auth-handlers.js` treats as fatal. Because the offline cache is only populated
+*after* a first successful online login, first-run activation could never
+complete.
 
-This is **pre-existing**, not caused by 005: the previous
+This was **pre-existing**, not caused by 005: the earlier
 `AS RESTRICTIVE USING (auth.role() = 'anon')` policy also denied authenticated
 users (RESTRICTIVE policies are ANDed, so that predicate passed for anon and
-failed for authenticated). Any database built from these files has this defect.
+failed for authenticated). Any database built from these files had the defect.
 
-Two mutually exclusive resolutions — **owner decision required**:
+**Resolution (owner decision: Option A).** The Desktop no longer reads
+PostgREST. The lookup moved to `GET /api/desktop/profile`:
 
-* **Option A — keep the boundary (recommended).** Desktop stops reading
-  PostgREST; the identity lookup moves behind an authenticated Admin API
-  endpoint (e.g. `GET /api/desktop/profile`) that uses `service_role`
-  server-side. Keeps `deny_all` intact and matches the stated architecture
-  ("no browser/Desktop caller gains privileged access"). Requires a Desktop
-  change, so it cannot happen while the RC is frozen.
-* **Option B — narrowly open the read.** Add PERMISSIVE `SELECT`-only policies
-  for `authenticated`: `profiles` where `auth.uid() = id`, and `clinics` where
-  `id IN (SELECT clinic_id FROM profiles WHERE id = auth.uid())` — i.e. what
-  `profiles_self_read` / `clinics_own_read` were meant to be. No Desktop change.
-  Weaker: any authenticated user can read their own profile+clinic row directly.
+| Property | Guarantee |
+|---|---|
+| Authentication | `Authorization: Bearer <Supabase user access token>`, validated by GoTrue via `auth.getUser(token)` — signature, expiry and revocation are the identity provider's decision, and no JWT secret is provisioned to the Admin service |
+| Subject | Derived **only** from the verified token. The route reads no query string, no body and no id header; `test/desktop-bootstrap.test.ts` asserts this structurally |
+| Privilege | `service_role` is used only *after* the subject is established, and only to read an explicit column list |
+| Projection | `profiles(id, status, clinic_id)` + `clinics(id, clinic_name)`, rebuilt through an allowlist so a future column cannot leak |
+| Failure modes | 401 `UNAUTHENTICATED`, 404 `PROFILE_NOT_LINKED`, 503 `BOOTSTRAP_UNAVAILABLE`. A failed read is never rendered as "no profile" |
+| Enumeration | Impossible: a caller can only ever address itself |
+| Admin whitelist | Deliberately **not** consulted — this is an end-user identity endpoint, not an admin endpoint |
 
-Until this is resolved, production Desktop online login will not work.
+`deny_all` on `profiles`/`clinics` is unchanged and must stay unchanged; a
+regression test fails if migration 005 is relaxed to accommodate the Desktop.
+
+Verified live against staging: 14/14 authorization and data-boundary checks,
+including that the Desktop's former query still returns `[]` for both the anon
+and the authenticated role.
 
 ---
 

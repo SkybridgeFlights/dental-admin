@@ -58,10 +58,23 @@ build-time configuration change. That is the whole integration.
 | Rebuild final RC | Only after the above pass in a scratch build. |
 | Packaged golden path | Re-run `test/packaged-golden-path.js` and `test/packaged-ui-probe.js` against the signed production artifact. |
 
-**Blocking dependency:** the OPEN ISSUE in
-`production-architecture-and-secrets.md` §2 (desktop `fetchProfile` vs
-`deny_all`). If Option A is chosen, the Desktop RC *must* change, which makes
-this a larger piece of work than a config swap.
+**Previously blocking dependency — now resolved.** The `fetchProfile` vs
+`deny_all` conflict (see `production-architecture-and-secrets.md` §2) was
+resolved by Option A: the Desktop calls `GET /api/desktop/profile` instead of
+reading PostgREST. That change *did* modify the Desktop source, so the RC was
+rebuilt and revalidated from scratch (version 1.0.1). Beyond that one change,
+production key integration remains a build-time configuration swap.
+
+**Additional Desktop configuration required for production**, alongside
+`DENTALPRO_LICENSE_PUBLIC_KEYS`:
+
+| Variable | Value |
+|---|---|
+| `DENTALPRO_AUTH_SERVER_URL` | production Admin base URL (the bootstrap endpoint is derived from it) |
+| `DENTALPRO_SUPABASE_URL` / `DENTALPRO_SUPABASE_ANON_KEY` | production project — used for GoTrue only |
+
+If `DENTALPRO_AUTH_SERVER_URL` is unset, online login now fails closed with
+`AUTH_CONFIG_MISSING` rather than silently attempting a database read.
 
 ---
 
@@ -123,6 +136,7 @@ Execute strictly in order. Do not proceed past a failed gate.
 | 6 | Set `ADMIN_EMAIL_WHITELIST` to the real owner address; deploy; confirm startup log shows the expected entry count and `Fault injection DISARMED` | **OWNER APPROVAL REQUIRED** |
 | 7 | Synthetic production issuance (a throwaway clinic/device), verify signature against the production public key, verify `keyId`, verify DB persistence and credential hashing | STOP/GO |
 | 8 | Device-auth validation: rerun the 12-test matrix against production **except** the fault-injection test, which must be **unavailable** (production is disarmed — assert 401/normal status, never 503 from a header) | STOP/GO |
+| 8b | Desktop identity bootstrap: rerun the 14-check boundary matrix against production, **except** the injected-failure check (fault injection is disarmed outside staging — assert the header changes nothing). Must include: unauthenticated 401, expired/forged token 401, own-data-only 200, caller-supplied id ignored, cross-user isolation, missing profile 404, allowlisted response keys, and that the anon **and** authenticated roles still read zero rows from `profiles`/`clinics` | STOP/GO |
 | 9 | Desktop production public-key integration (Part 2) in a scratch build | STOP/GO |
 | 10 | Rebuild final Desktop RC | **OWNER APPROVAL REQUIRED** — changes the validated RC |
 | 11 | Packaged golden-path + UI probe against the production build | STOP/GO |

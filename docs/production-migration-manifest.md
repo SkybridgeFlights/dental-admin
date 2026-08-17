@@ -82,8 +82,28 @@ SELECT COUNT(*) FROM information_schema.views WHERE table_schema='public';   -- 
 ```
 GET  /rest/v1/clinics?select=*&limit=1          -> 200 with [] (zero rows)
 POST /rest/v1/clinics                            -> 401 / 42501
-POST /rest/v1/rpc/replace_device_license (args)  -> 401 42501 permission denied
+POST /rest/v1/rpc/replace_device_license (args)  -> denied (42501, or PGRST202
+                                                    because the function is not
+                                                    exposed to the role at all)
 ```
+
+Repeat every probe above with a **real authenticated end-user token**, not only
+the anon key. The two roles are distinct, and an earlier revision of these files
+denied anon while leaving authenticated readable. In particular:
+
+```
+GET /rest/v1/profiles?select=*,clinics!clinic_id(clinic_name)&id=eq.<uid>
+    with Authorization: Bearer <user token>   -> 200 with [] (zero rows)
+```
+
+That query is the one the Desktop used to issue. It must return nothing. The
+Desktop now obtains the same information from `GET /api/desktop/profile`, so a
+non-empty result here means a permissive policy has been reintroduced.
+
+**No table grant of any kind is required for the Desktop to work.** If a
+migration ever adds a permissive `SELECT` policy for `authenticated` on
+`profiles` or `clinics` to "fix" a login problem, that is a regression — the
+bootstrap endpoint is the supported path.
 
 Then the Admin service startup log must read:
 
