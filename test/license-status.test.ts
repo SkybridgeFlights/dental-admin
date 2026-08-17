@@ -5,6 +5,7 @@ import {
   toOutcome,
   forceFailure,
   stagingFaultTarget,
+  isFaultInjectionArmed,
   type ClinicRow,
   type LicenseRow,
 } from '../lib/license/status';
@@ -169,6 +170,39 @@ test('fault injection activates only for known targets in staging', () => {
     assert.equal(stagingFaultTarget(req({ 'x-staging-fault-injection': 'clinics' })), 'clinics');
     assert.equal(stagingFaultTarget(req({ 'x-staging-fault-injection': 'devices' })), null);
     assert.equal(stagingFaultTarget(req({})), null, 'absent header must be inert');
+  } finally {
+    if (prev === undefined) delete process.env.DENTALPRO_ENVIRONMENT;
+    else process.env.DENTALPRO_ENVIRONMENT = prev;
+  }
+});
+
+// ── production fault-injection posture ───────────────────────────────────────
+test('isFaultInjectionArmed is false for every non-staging environment', () => {
+  const prev = process.env.DENTALPRO_ENVIRONMENT;
+  try {
+    for (const env of ['production', 'development', 'test', 'Staging', 'STAGING', '', undefined]) {
+      if (env === undefined) delete process.env.DENTALPRO_ENVIRONMENT;
+      else process.env.DENTALPRO_ENVIRONMENT = env;
+      assert.equal(isFaultInjectionArmed(), false, `must be disarmed when env=${String(env)}`);
+    }
+    process.env.DENTALPRO_ENVIRONMENT = 'staging';
+    assert.equal(isFaultInjectionArmed(), true, 'armed only for exact lowercase "staging"');
+  } finally {
+    if (prev === undefined) delete process.env.DENTALPRO_ENVIRONMENT;
+    else process.env.DENTALPRO_ENVIRONMENT = prev;
+  }
+});
+
+test('stagingFaultTarget agrees with isFaultInjectionArmed', () => {
+  const prev = process.env.DENTALPRO_ENVIRONMENT;
+  const req = { headers: { get: () => 'licenses' } };
+  try {
+    process.env.DENTALPRO_ENVIRONMENT = 'production';
+    assert.equal(isFaultInjectionArmed(), false);
+    assert.equal(stagingFaultTarget(req), null, 'no fault target while disarmed');
+    process.env.DENTALPRO_ENVIRONMENT = 'staging';
+    assert.equal(isFaultInjectionArmed(), true);
+    assert.equal(stagingFaultTarget(req), 'licenses');
   } finally {
     if (prev === undefined) delete process.env.DENTALPRO_ENVIRONMENT;
     else process.env.DENTALPRO_ENVIRONMENT = prev;

@@ -107,9 +107,28 @@ export function classifyLicenseStatus(input: {
  *    so it can never manufacture access or a more permissive status
  */
 export function stagingFaultTarget(request: { headers: { get(name: string): string | null } }): string | null {
-  if (process.env.DENTALPRO_ENVIRONMENT !== 'staging') return null;
+  if (!isFaultInjectionArmed()) return null;
   const target = request.headers.get('x-staging-fault-injection');
   return target === 'licenses' || target === 'clinics' ? target : null;
+}
+
+/**
+ * Single source of truth for whether the staging fault-injection hook is armed.
+ *
+ * PRODUCTION DECISION (see docs/production-migration-manifest.md):
+ * the hook stays COMPILED into every build and fails closed outside staging,
+ * rather than being stripped from production builds. Stripping would produce a
+ * different artifact for production than the one exercised by the staging
+ * regression suite — "test what you ship" is worth more here than removing an
+ * already-unreachable branch. It is:
+ *   - inert unless DENTALPRO_ENVIRONMENT === 'staging'
+ *   - stateless (per-request header; nothing persists)
+ *   - evaluated only AFTER device authentication succeeds
+ *   - able only to turn a successful read into a failure, never the reverse
+ * Startup logs the armed state so production can be audited as disarmed.
+ */
+export function isFaultInjectionArmed(): boolean {
+  return process.env.DENTALPRO_ENVIRONMENT === 'staging';
 }
 
 /** Force an outcome to failure. Only ever narrows availability. */

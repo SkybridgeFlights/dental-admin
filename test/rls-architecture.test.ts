@@ -118,6 +118,58 @@ test('application code never reads sensitive tables with an anon-key client', ()
   }
 });
 
+/**
+ * SECURITY DEFINER / EXECUTE grant regression.
+ *
+ * Empirically confirmed before migration 006: the PUBLIC anon key could call
+ * replace_device_license through PostgREST (HTTP 200, minted a licence row).
+ * `REVOKE ... FROM PUBLIC` in 004 was insufficient because Supabase grants
+ * EXECUTE to anon/authenticated EXPLICITLY, and the function is SECURITY
+ * DEFINER so it bypasses RLS entirely.
+ */
+const SECURITY_DEFINER_FNS = ['replace_device_license'];
+
+function migrationSql(): string {
+  let combined = '';
+  for (const f of readdirSync(SUPABASE_DIR).filter((x) => x.endsWith('.sql'))) {
+    if (/SUPERSEDED/i.test(read(f))) continue;
+    combined += stripComments(read(f)) + '\n';
+  }
+  return combined;
+}
+
+test('REGRESSION: every SECURITY DEFINER function revokes EXECUTE from anon and authenticated', () => {
+  const sql = migrationSql();
+  for (const fn of SECURITY_DEFINER_FNS) {
+    for (const role of ['anon', 'authenticated']) {
+      assert.match(
+        sql,
+        new RegExp(`REVOKE\\s+ALL\\s+ON\\s+FUNCTION[^;]*${fn}[^;]*FROM\\s+${role}\\b`, 'is'),
+        `${fn} must explicitly REVOKE EXECUTE FROM ${role}. Revoking from PUBLIC alone does ` +
+          `not remove Supabase's explicit role grants, and the function is SECURITY DEFINER ` +
+          `so it bypasses RLS.`,
+      );
+    }
+    assert.match(
+      sql,
+      new RegExp(`GRANT\\s+EXECUTE\\s+ON\\s+FUNCTION[^;]*${fn}[^;]*TO\\s+service_role\\b`, 'is'),
+      `${fn} must GRANT EXECUTE only to service_role (server-side licensing).`,
+    );
+  }
+});
+
+test('no migration grants EXECUTE on a SECURITY DEFINER function to anon or authenticated', () => {
+  const sql = migrationSql();
+  for (const fn of SECURITY_DEFINER_FNS) {
+    for (const role of ['anon', 'authenticated']) {
+      assert.ok(
+        !new RegExp(`GRANT\\s+EXECUTE\\s+ON\\s+FUNCTION[^;]*${fn}[^;]*TO\\s+[^;]*\\b${role}\\b`, 'is').test(sql),
+        `${fn} must never GRANT EXECUTE to ${role}`,
+      );
+    }
+  }
+});
+
 test('the service-role client is never imported by a client component', () => {
   const clientComponents = ['app/login/page.tsx', 'app/reset-password/page.tsx', 'app/dashboard/LogoutButton.tsx'];
   for (const rel of clientComponents) {

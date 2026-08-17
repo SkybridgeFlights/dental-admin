@@ -257,5 +257,13 @@ export async function validateStartup(): Promise<void> {
   // 5. Whitelist
   logWhitelist();
 
+  // 6. Fault-injection posture — auditable in logs. Production must show DISARMED.
+  const { isFaultInjectionArmed } = await import('../license/status');
+  if (isFaultInjectionArmed()) {
+    log('warn', 'Staging fault injection ARMED (x-staging-fault-injection accepted after device auth)');
+  } else {
+    log('info', 'Fault injection DISARMED (not a staging environment)');
+  }
+
   console.info('[startup] ─────────────────────────────────────────────────────────\n');
 }

@@ -46,6 +46,7 @@ const APPLY_ORDER = [
   '003_audit_log.sql',
   '004_device_auth_and_atomic_license.sql',
   '005_rls_deny_by_default.sql',
+  '006_rpc_execute_hardening.sql',
 ];
 
 /** Tables that must never be readable by the anon or authenticated roles. */
